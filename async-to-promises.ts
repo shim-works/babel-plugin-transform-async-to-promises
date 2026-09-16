@@ -342,7 +342,6 @@ interface Helper {
 	readonly value: Node;
 	readonly dependencies: readonly HelperName[];
 }
-let helpers: { [name: string]: Helper } | undefined;
 
 const alwaysTruthy = Object.keys(constantStaticMethods);
 const numberNames = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
@@ -376,6 +375,10 @@ export default function ({
 	version: string;
 }): PluginObj<PluginState> {
 	const isNewBabel = !/^6\./.test(version);
+
+	// Parsed from ./helpers.js on first use. Kept per plugin instance rather than per module, since
+	// the AST belongs to the babel that parsed it and must not leak into another babel's transform.
+	let helpers: { [name: string]: Helper } | undefined;
 
 	function cloneNode<T extends Node>(node: T): T {
 		const result = (types as any).cloneDeep(node) as T;
@@ -411,6 +414,26 @@ export default function ({
 			contextPath = contextPath.parentPath;
 		}
 		throw parentPath.buildCodeFrameError(`Unable to find a context upon which to traverse!`, TypeError);
+	}
+
+	// Checks whether a node is still reachable from the block being rewritten. Rewrites detach whole
+	// subtrees, and the visitor can be handed a path into one of them afterwards. babel 7 leaves
+	// such a path's parent chain pointing at the detached nodes, so acting on it is harmless, but
+	// babel 8 re-links it into the live tree, where the same action duplicates work.
+	function isAttachedTo(node: Node, root: NodePath): boolean {
+		if (root.node === node) {
+			return true;
+		}
+		let found = false;
+		root.traverse({
+			enter(candidate: NodePath) {
+				if (candidate.node === node) {
+					found = true;
+					candidate.stop();
+				}
+			},
+		} as Visitor);
+		return found;
 	}
 
 	// Checks whether nodes pass a test
@@ -1425,7 +1448,16 @@ export default function ({
 		// Insert a const declaration containing the function
 		scope.push({ kind: "const", id, init: func, unique: true });
 		// Find the declaration we just inserted
-		const binding = scope.getBinding(id.name);
+		let binding = scope.getBinding(id.name);
+		if (typeof binding === "undefined" && scope.path.isLoop()) {
+			// Given a loop scope, Babel's Scope#push calls ensureBlock() and inserts into the loop's
+			// BODY, registering the binding on a descendant scope. Scope#getBinding only walks up the
+			// scope chain, so it never sees it. Look where push actually put it.
+			const bodyPath = scope.path.get("body");
+			if (!Array.isArray(bodyPath) && bodyPath.scope !== scope) {
+				binding = bodyPath.scope.getBinding(id.name);
+			}
+		}
 		if (typeof binding === "undefined") {
 			/* istanbul ignore next */
 			throw scope.path.buildCodeFrameError(`Could not find newly created binding for ${id.name}!`, Error);
@@ -3228,6 +3260,23 @@ export default function ({
 		const additionalConstantNames = state.additionalConstantNames;
 		let awaitPath: NodePath<AwaitExpression> | NodePath<YieldExpression> | NodePath<Node>;
 		let processExpressions: boolean;
+		if (!isAttachedTo(rewritePath.node, path)) {
+			// An earlier rewrite already replaced the subtree this node came from. babel 7 leaves the
+			// parent chain inside those detached nodes, so the work below lands harmlessly there;
+			// babel 8 re-links the chain into the live tree, where it would duplicate the rewrite.
+			// Only bail out in the latter case, so that babel 7 keeps behaving as it always has.
+			let statementParent: NodePath<Node> | null = rewritePath;
+			while (
+				statementParent != null &&
+				!statementParent.isStatement() &&
+				!statementParent.isArrowFunctionExpression()
+			) {
+				statementParent = statementParent.parentPath;
+			}
+			if (statementParent != null && isAttachedTo(statementParent.node, path)) {
+				return;
+			}
+		}
 		const rewritePathCopy = rewritePath;
 		if (rewritePath.isAwaitExpression() || rewritePath.isYieldExpression()) {
 			awaitPath = rewritePath;
@@ -4214,7 +4263,7 @@ export default function ({
 					"body",
 					types.importDeclaration(
 						[types.importSpecifier(result, types.identifier(name))],
-						types.stringLiteral("babel-plugin-transform-async-to-promises/helpers")
+						types.stringLiteral("@shim-works/babel-plugin-transform-async-to-promises/helpers")
 					)
 				);
 			} else {
@@ -4849,6 +4898,10 @@ export default function ({
 									break;
 								}
 								case "return": {
+									// The rewrite below emits a call to _async, but runs too late for
+									// the helper to be discovered and injected, so reference it up
+									// front. See rpetrich/babel-plugin-transform-async-to-promises#84
+									helperReference(this, path, "_async");
 									rewriteAsyncBlock(
 										{ state: this },
 										topLevelAwaitParent,

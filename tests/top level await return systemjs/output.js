@@ -1,0 +1,1 @@
+System.register([],function(_export,_context){"use strict";var answer;return{setters:[],execute:_async(()=>_await(Promise.resolve(),()=>{_export("answer",answer=42);}))};});

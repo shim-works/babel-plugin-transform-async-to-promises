@@ -1,0 +1,1 @@
+System.register([],function(_export,_context){"use strict";var answer;return{setters:[],execute:function(){try{return Promise.resolve(Promise.resolve()).then(function(){_export("answer",answer=42);});}catch(e){return Promise.reject(e);}}};});

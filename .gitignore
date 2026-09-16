@@ -1,5 +1,5 @@
 node_modules
-babel-plugin-transform-async-to-promises-*.tgz
+*.tgz
 coverage
 async-to-promises.js
 async-to-promises.js.map

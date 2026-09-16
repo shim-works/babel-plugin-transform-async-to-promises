@@ -1,5 +1,6 @@
 *.test.js
-babel-plugin-transform-async-to-promises-*.tgz
+*.tgz
+.claude/
 coverage
 generate-helpers-string.js
 .github/

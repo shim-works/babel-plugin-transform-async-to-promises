@@ -1,0 +1,8 @@
+{
+	"supportedBabels": ["babel 7"],
+	"module": true,
+	"plugins": ["transform-modules-systemjs"],
+	"options": {
+		"topLevelAwait": "return"
+	}
+}
